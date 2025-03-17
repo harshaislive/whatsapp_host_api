@@ -10,7 +10,7 @@ import { Boom } from '@hapi/boom';
 import path from 'path';
 import fs from 'fs';
 import pino from 'pino';
-import qrcode from 'qrcode-terminal';
+import qrcode from 'qrcode';
 import { webcrypto } from 'crypto';
 
 // Set crypto for Baileys
@@ -24,6 +24,7 @@ class WhatsAppService {
   private logger: ReturnType<typeof pino>;
   private storeFile: string;
   private storeInterval: NodeJS.Timeout | null = null;
+  private currentQR: string | null = null;
 
   constructor() {
     // Configure logger
@@ -75,7 +76,7 @@ class WhatsAppService {
     this.sock = makeWASocket({
       auth: state,
       logger: this.logger,
-      printQRInTerminal: false // We'll handle QR code display ourselves
+      printQRInTerminal: false
     });
 
     // Bind events
@@ -89,9 +90,16 @@ class WhatsAppService {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        // Display QR code
-        qrcode.generate(qr, { small: true });
-        console.log('Scan the QR code above to login');
+        // Generate QR code as data URL
+        try {
+          this.currentQR = await qrcode.toDataURL(qr);
+          console.log('\n----------------------------');
+          console.log('Scan QR Code at this URL:');
+          console.log(`https://image-charts.com/chart?chs=350x350&cht=qr&choe=UTF-8&chl=${encodeURIComponent(qr)}`);
+          console.log('----------------------------\n');
+        } catch (err) {
+          console.error('Failed to generate QR code:', err);
+        }
       }
 
       if (connection === 'close') {
@@ -101,7 +109,6 @@ class WhatsAppService {
           await this.connect();
         } else {
           console.log('WhatsApp connection closed');
-          // Clear store interval on disconnect
           if (this.storeInterval) {
             clearInterval(this.storeInterval);
             this.storeInterval = null;
@@ -111,6 +118,7 @@ class WhatsAppService {
 
       if (connection === 'open') {
         console.log('WhatsApp connection established');
+        this.currentQR = null; // Clear QR code once connected
       }
     });
 
@@ -143,6 +151,10 @@ class WhatsAppService {
 
   isConnected() {
     return this.sock?.user !== undefined;
+  }
+
+  getCurrentQR() {
+    return this.currentQR;
   }
 }
 
