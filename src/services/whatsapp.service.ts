@@ -11,6 +11,12 @@ import path from 'path';
 import fs from 'fs';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
+import { webcrypto } from 'crypto';
+
+// Set crypto for Baileys
+if (typeof global.crypto !== 'object') {
+  global.crypto = webcrypto as any;
+}
 
 class WhatsAppService {
   private sock: WASocket | null = null;

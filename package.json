@@ -2,6 +2,9 @@
   "name": "whatsapp_api_server",
   "version": "1.0.0",
   "main": "index.js",
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "scripts": {
     "start": "ts-node src/app.ts",
     "dev": "nodemon --exec ts-node src/app.ts",
