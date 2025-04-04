@@ -183,6 +183,71 @@ class WhatsAppService {
   }
   // >>> END ADDED <<<
 
+  // Method to fetch chat history from a specific JID
+  async fetchChatHistory(jid: string, limit = 50): Promise<proto.IWebMessageInfo[]> {
+    try {
+      if (!this.sock) {
+        throw new Error('WhatsApp client not initialized');
+      }
+      
+      console.log(`Fetching chat history for ${jid}`);
+      
+      // Use the store to get messages
+      const messages = this.store.messages[jid]?.array.slice(-limit) || [];
+      
+      console.log(`Found ${messages.length} messages in chat history for ${jid}`);
+      
+      // Process and save all these messages to Supabase
+      for (const msg of messages) {
+        // Skip messages from the user themselves
+        if (msg.key.fromMe) continue;
+        
+        // Use the existing function to process each message
+        await this.handleIncomingMessage(msg);
+      }
+      
+      return messages;
+    } catch (error) {
+      console.error('Error fetching chat history:', error);
+      throw error;
+    }
+  }
+
+  // Method to list all chats
+  async listAllChats(): Promise<{jid: string, name?: string, isGroup: boolean}[]> {
+    try {
+      if (!this.sock) {
+        throw new Error('WhatsApp client not initialized');
+      }
+      
+      const chats: {jid: string, name?: string, isGroup: boolean}[] = [];
+      
+      // Get all chats from the store
+      const jids = Object.keys(this.store.messages);
+      
+      for (const jid of jids) {
+        const isGroup = jid.endsWith('@g.us');
+        let name: string | undefined;
+        
+        if (isGroup) {
+          try {
+            const groupInfo = await this.sock.groupMetadata(jid);
+            name = groupInfo.subject;
+          } catch (error) {
+            console.error(`Error fetching group info for ${jid}:`, error);
+          }
+        }
+        
+        chats.push({ jid, name, isGroup });
+      }
+      
+      return chats;
+    } catch (error) {
+      console.error('Error listing chats:', error);
+      return [];
+    }
+  }
+
   // >>> ADDED: Function to handle incoming messages <<<
   private async handleIncomingMessage(msg: proto.IWebMessageInfo) {
     try {
@@ -341,6 +406,37 @@ class WhatsAppService {
     }
   }
   // >>> END ADDED <<<
+
+  // Add this new method
+  async loadHistoricalMessages(jid: string, limit = 25) {
+    try {
+      if (!this.sock) {
+        throw new Error('WhatsApp client not initialized');
+      }
+
+      console.log(`Attempting to load historical messages for ${jid}`);
+      // Use the correct API method for fetching messages
+      const messages = await this.sock.fetchMessagesFromWA(jid, limit);
+
+      if (!messages || messages.length === 0) {
+        console.log(`No historical messages found for ${jid}`);
+        return [];
+      }
+
+      console.log(`Found ${messages.length} historical messages`);
+      
+      // Process and save each message
+      for (const msg of messages) {
+        // Use the existing function to process each message
+        await this.handleIncomingMessage(msg);
+      }
+
+      return messages;
+    } catch (error) {
+      console.error('Error loading historical messages:', error);
+      throw error;
+    }
+  }
 }
 
 // Create singleton instance
