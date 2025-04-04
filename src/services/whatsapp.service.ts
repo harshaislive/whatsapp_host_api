@@ -24,6 +24,8 @@ interface SnippetData {
   content: string; // Text message or Media URL
   sender_name?: string; // Optional: Sender's push name
   caption?: string; // Optional: Caption for media messages
+  group_name?: string; // Add group name field
+  is_group?: boolean; // Add flag to identify group messages
 }
 
 class WhatsAppService {
@@ -184,7 +186,6 @@ class WhatsAppService {
   // >>> ADDED: Function to handle incoming messages <<<
   private async handleIncomingMessage(msg: proto.IWebMessageInfo) {
     try {
-      // Ensure message and remoteJid exist
       if (!msg.message || !msg.key.remoteJid) {
         console.log('Skipping message without content or sender JID.');
         return;
@@ -192,11 +193,26 @@ class WhatsAppService {
 
       const senderJid = msg.key.remoteJid;
       const timestamp = new Date((msg.messageTimestamp as number) * 1000);
-      const senderName = msg.pushName || undefined; // Extract pushName, fallback to undefined
+      const senderName = msg.pushName || undefined;
+      
+      // Check if message is from a group
+      const isGroup = senderJid.endsWith('@g.us');
+      let groupName: string | undefined;
+
+      // Get group name if message is from a group
+      if (isGroup && this.sock) {
+        try {
+          const groupInfo = await this.sock.groupMetadata(senderJid);
+          groupName = groupInfo.subject; // This is the group name
+          console.log(`Message from group: ${groupName}`);
+        } catch (error) {
+          console.error('Error fetching group metadata:', error);
+        }
+      }
 
       let messageType: SnippetData['message_type'] = 'unknown';
       let content: string = '';
-      let caption: string | undefined = undefined; // Variable to hold the caption
+      let caption: string | undefined = undefined;
 
       // Use optional chaining for safer access
       if (msg.message?.conversation) {
@@ -227,7 +243,9 @@ class WhatsAppService {
           message_type: messageType,
           content: content,
           sender_name: senderName,
-          caption: caption, // Include caption here
+          caption: caption,
+          group_name: groupName, // Add group name to snippet data
+          is_group: isGroup     // Add group flag to snippet data
         };
         await this.saveSnippetToSupabase(snippetData);
       } else {
@@ -302,14 +320,16 @@ class WhatsAppService {
   private async saveSnippetToSupabase(data: SnippetData) {
     try {
       const { error } = await supabase
-        .from('whatsapp_snippets') // Your table name
+        .from('whatsapp_snippets')
         .insert([{
           sender_jid: data.sender_jid,
           timestamp: data.timestamp.toISOString(),
           message_type: data.message_type,
           content: data.content,
           sender_name: data.sender_name,
-          caption: data.caption, // Include caption in insert
+          caption: data.caption,
+          group_name: data.group_name, // Add group name to database insert
+          is_group: data.is_group      // Add group flag to database insert
         }]);
 
       if (error) {
