@@ -15,6 +15,7 @@ import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import supabase from './supabase.service'; // Import Supabase client
 import { v4 as uuidv4 } from 'uuid'; // Import UUID for filenames
+import { setTimeout as sleep } from 'timers/promises'; // Import for async sleep
 
 // Define the structure for our snippet data
 interface SnippetData {
@@ -26,6 +27,51 @@ interface SnippetData {
   caption?: string; // Optional: Caption for media messages
   group_name?: string; // Add group name field
   is_group?: boolean; // Add flag to identify group messages
+}
+
+// Helper function for exponential backoff and retry logic
+async function exponentialBackoff<T>(
+  operation: () => Promise<T>,
+  retries = 5,
+  initialDelay = 1000,
+  factor = 2,
+  jitterFactor = 0.1
+): Promise<T> {
+  let currentDelay = initialDelay;
+  let attempts = 0;
+
+  while (true) {
+    try {
+      attempts++;
+      return await operation();
+    } catch (error) {
+      if (attempts >= retries) {
+        throw error;
+      }
+
+      // For rate limit errors, use backoff; for other errors, maybe don't retry
+      if (error instanceof Error) {
+        // If it's not a rate limit error, we might want to throw immediately for some error types
+        if (error.message && !error.message.includes('rate') && !error.message.includes('limit') && 
+            error.message.includes('bad request') && !error.message.includes('ETIMEOUT') &&
+            !error.message.includes('ECONNRESET')) {
+          throw error;
+        }
+      }
+
+      // Add some jitter to prevent all retries hitting at the same time
+      const jitter = currentDelay * jitterFactor * (Math.random() * 2 - 1);
+      const delay = currentDelay + jitter;
+      
+      console.log(`Rate limit encountered. Retrying after ${Math.round(delay / 1000)}s (attempt ${attempts}/${retries})...`);
+      
+      // Wait before retrying
+      await sleep(delay);
+      
+      // Increase delay for next attempt
+      currentDelay *= factor;
+    }
+  }
 }
 
 class WhatsAppService {
@@ -198,14 +244,40 @@ class WhatsAppService {
       console.log(`Found ${messages.length} messages in chat history for ${jid}`);
       
       // Process and save all these messages to Supabase
-      for (const msg of messages) {
-        // Skip messages from the user themselves
-        if (msg.key.fromMe) continue;
+      let processedCount = 0;
+      let failedCount = 0;
+      
+      // Process in smaller batches with delays to avoid rate limits
+      const batchSize = 5;
+      for (let i = 0; i < messages.length; i += batchSize) {
+        const batch = messages.slice(i, i + batchSize);
+        console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(messages.length/batchSize)}`);
         
-        // Use the existing function to process each message
-        await this.handleIncomingMessage(msg);
+        // Process each message in the batch
+        const promises = batch.map(async (msg) => {
+          try {
+            // Skip messages from the user themselves
+            if (msg.key.fromMe) return;
+            
+            // Use the existing function to process each message
+            await this.handleIncomingMessage(msg);
+            processedCount++;
+          } catch (error) {
+            console.error('Failed to process message:', error);
+            failedCount++;
+          }
+        });
+        
+        await Promise.all(promises);
+        
+        // Add a delay between batches to avoid rate limits
+        if (i + batchSize < messages.length) {
+          console.log(`Waiting 2 seconds before processing next batch...`);
+          await sleep(2000);
+        }
       }
       
+      console.log(`Completed processing ${processedCount} messages. Failed: ${failedCount}.`);
       return messages;
     } catch (error) {
       console.error('Error fetching chat history:', error);
@@ -288,17 +360,31 @@ class WhatsAppService {
         content = msg.message.extendedTextMessage.text;
       } else if (msg.message?.imageMessage) {
         messageType = 'image';
-        content = await this.downloadAndUploadMedia(msg, 'image');
-        caption = msg.message.imageMessage.caption || undefined; // Extract image caption
+        try {
+          content = await this.downloadAndUploadMedia(msg, 'image');
+          caption = msg.message.imageMessage.caption || undefined; // Extract image caption
+        } catch (error) {
+          console.error('Failed to download image, storing message without media:', error);
+          content = 'media_download_failed';
+        }
       } else if (msg.message?.videoMessage) {
         messageType = 'video';
-        content = await this.downloadAndUploadMedia(msg, 'video');
-        caption = msg.message.videoMessage.caption || undefined; // Extract video caption
+        try {
+          content = await this.downloadAndUploadMedia(msg, 'video');
+          caption = msg.message.videoMessage.caption || undefined; // Extract video caption
+        } catch (error) {
+          console.error('Failed to download video, storing message without media:', error);
+          content = 'media_download_failed';
+        }
       } else if (msg.message?.documentMessage) {
         messageType = 'document';
-        content = await this.downloadAndUploadMedia(msg, 'document');
-        caption = msg.message.documentMessage.caption || undefined; // Extract document caption
-        // Potentially add file name extraction here if needed
+        try {
+          content = await this.downloadAndUploadMedia(msg, 'document');
+          caption = msg.message.documentMessage.caption || undefined; // Extract document caption
+        } catch (error) {
+          console.error('Failed to download document, storing message without media:', error);
+          content = 'media_download_failed';
+        }
       }
 
       if (messageType !== 'unknown' && content) {
@@ -323,62 +409,65 @@ class WhatsAppService {
 
   // >>> ADDED: Function to download media and upload to Supabase Storage <<<
   private async downloadAndUploadMedia(msg: proto.IWebMessageInfo, type: 'image' | 'video' | 'document'): Promise<string> {
-    try {
-      // Added null check for msg.message here as well
-      const messageContent = msg.message?.imageMessage || msg.message?.videoMessage || msg.message?.documentMessage;
-      if (!messageContent) {
-        throw new Error('No media content found in message');
-      }
-      
-      // Extract the correct media key based on the message type
-      const mediaKey = messageContent.mediaKey;
-      const mimetype = messageContent.mimetype;
-      const fileExtension = mimetype?.split('/')[1] || ''; // Basic extension extraction
-      const filename = `${uuidv4()}${fileExtension ? '.' + fileExtension : ''}`;
-
-      // Download media
-      const buffer = await downloadMediaMessage(
-          msg, 
-          'buffer', 
-          {}, 
-          { 
-            logger: this.logger, 
-            reuploadRequest: this.sock!.updateMediaMessage
-          }
-      );
-
-      if (!(buffer instanceof Buffer)) {
-        throw new Error('Failed to download media or buffer is not a Buffer');
-      }
-
-      // Upload to Supabase Storage
-      const { data, error } = await supabase.storage
-        .from('whatsapp-media') // Your bucket name
-        .upload(filename, buffer, {
-          contentType: mimetype || undefined,
-          upsert: false, // Don't overwrite existing files (optional)
-        });
-
-      if (error) {
-        throw new Error(`Supabase Storage upload error: ${error.message}`);
-      }
-
-      // Get public URL (adjust if using signed URLs)
-      const { data: urlData } = supabase.storage
-        .from('whatsapp-media')
-        .getPublicUrl(data.path);
-
-      if (!urlData || !urlData.publicUrl) {
-          throw new Error('Could not get public URL for uploaded media');
-      }
-      console.log(`Media uploaded: ${urlData.publicUrl}`);
-      return urlData.publicUrl;
-
-    } catch (error) {
-      console.error('Error downloading or uploading media:', error);
-      // Decide how to handle failed media: return placeholder, empty string, or rethrow
-      return 'media_upload_failed'; 
+    // Added null check for msg.message here as well
+    const messageContent = msg.message?.imageMessage || msg.message?.videoMessage || msg.message?.documentMessage;
+    if (!messageContent) {
+      throw new Error('No media content found in message');
     }
+    
+    // Extract the correct media key based on the message type
+    const mediaKey = messageContent.mediaKey;
+    const mimetype = messageContent.mimetype;
+    const fileExtension = mimetype?.split('/')[1] || ''; // Basic extension extraction
+    const filename = `${uuidv4()}${fileExtension ? '.' + fileExtension : ''}`;
+
+    return await exponentialBackoff(async () => {
+      try {
+        // Download media with retry mechanism
+        const buffer = await downloadMediaMessage(
+            msg, 
+            'buffer', 
+            {}, 
+            { 
+              logger: this.logger, 
+              reuploadRequest: this.sock!.updateMediaMessage
+            }
+        );
+
+        if (!(buffer instanceof Buffer)) {
+          throw new Error('Failed to download media or buffer is not a Buffer');
+        }
+
+        // Added small delay to avoid overwhelming the Supabase Storage
+        await sleep(500);
+
+        // Upload to Supabase Storage
+        const { data, error } = await supabase.storage
+          .from('whatsapp-media') // Your bucket name
+          .upload(filename, buffer, {
+            contentType: mimetype || undefined,
+            upsert: false, // Don't overwrite existing files (optional)
+          });
+
+        if (error) {
+          throw new Error(`Supabase Storage upload error: ${error.message}`);
+        }
+
+        // Get public URL (adjust if using signed URLs)
+        const { data: urlData } = supabase.storage
+          .from('whatsapp-media')
+          .getPublicUrl(data.path);
+
+        if (!urlData || !urlData.publicUrl) {
+            throw new Error('Could not get public URL for uploaded media');
+        }
+        console.log(`Media uploaded: ${urlData.publicUrl}`);
+        return urlData.publicUrl;
+      } catch (error) {
+        console.error('Error downloading or uploading media:', error);
+        throw error; // Let the exponentialBackoff function handle retries
+      }
+    }, 5, 2000); // 5 retries starting with 2 second delay
   }
 
   // >>> ADDED: Function to save snippet data to Supabase DB <<<
