@@ -406,37 +406,6 @@ class WhatsAppService {
     }
   }
   // >>> END ADDED <<<
-
-  // Add this new method
-  async loadHistoricalMessages(jid: string, limit = 25) {
-    try {
-      if (!this.sock) {
-        throw new Error('WhatsApp client not initialized');
-      }
-
-      console.log(`Attempting to load historical messages for ${jid}`);
-      // Use the correct API method for fetching messages
-      const messages = await this.sock.fetchMessagesFromWA(jid, limit);
-
-      if (!messages || messages.length === 0) {
-        console.log(`No historical messages found for ${jid}`);
-        return [];
-      }
-
-      console.log(`Found ${messages.length} historical messages`);
-      
-      // Process and save each message
-      for (const msg of messages) {
-        // Use the existing function to process each message
-        await this.handleIncomingMessage(msg);
-      }
-
-      return messages;
-    } catch (error) {
-      console.error('Error loading historical messages:', error);
-      throw error;
-    }
-  }
 }
 
 // Create singleton instance
