@@ -1,3 +1,10 @@
+import dotenv from 'dotenv';
+
+dotenv.config(); // Load .env variables
+
+// Determine the server URL based on environment variable or default
+const serverUrl = process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 3000}`;
+
 export const swaggerDocument = {
   openapi: '3.0.0',
   info: {
@@ -10,8 +17,8 @@ export const swaggerDocument = {
   },
   servers: [
     {
-      url: 'http://localhost:3000',
-      description: 'Local development server'
+      url: serverUrl,
+      description: process.env.NODE_ENV === 'production' ? 'Production Server' : 'Development Server'
     }
   ],
   tags: [
