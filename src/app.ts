@@ -3,7 +3,6 @@ import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
 import whatsappService from './services/whatsapp.service';
 import messageRoutes from './routes/message.routes';
-import testRoutes from './routes/test.routes';
 import { swaggerDocument } from './config/swagger';
 import QRCode from 'qrcode';
 
@@ -22,7 +21,6 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 // Routes
 app.use('/api/messages', messageRoutes);
-app.use('/api/test', testRoutes);
 
 // Updated QR Code Endpoint to generate image
 app.get('/api/qr-code', async (req, res) => {

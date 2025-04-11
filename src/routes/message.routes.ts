@@ -85,6 +85,7 @@ router.get('/chats', async (req, res) => {
 });
 
 // NEW ENDPOINT: Fetch chat history for a specific JID and save to Supabase
+// NEW ENDPOINT: Fetch chat history for a specific JID (from memory)
 router.get('/history/:jid', async (req, res) => {
   try {
     const { jid } = req.params;
@@ -101,7 +102,7 @@ router.get('/history/:jid', async (req, res) => {
     
     res.json({
       status: 'success',
-      message: `${messages.length} messages processed and saved to Supabase`,
+      message: `${messages.length} messages processed from memory`,
       count: messages.length
     });
   } catch (error) {

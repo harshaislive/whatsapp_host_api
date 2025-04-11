@@ -13,66 +13,8 @@ import path from 'path';
 import fs from 'fs';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import supabase from './supabase.service'; // Import Supabase client
-import { v4 as uuidv4 } from 'uuid'; // Import UUID for filenames
-import { setTimeout as sleep } from 'timers/promises'; // Import for async sleep
-
-// Define the structure for our snippet data
-interface SnippetData {
-  sender_jid: string;
-  timestamp: Date;
-  message_type: 'text' | 'image' | 'video' | 'document' | 'unknown';
-  content: string; // Text message or Media URL
-  sender_name?: string; // Optional: Sender's push name
-  caption?: string; // Optional: Caption for media messages
-  group_name?: string; // Add group name field
-  is_group?: boolean; // Add flag to identify group messages
-}
-
-// Helper function for exponential backoff and retry logic
-async function exponentialBackoff<T>(
-  operation: () => Promise<T>,
-  retries = 5,
-  initialDelay = 1000,
-  factor = 2,
-  jitterFactor = 0.1
-): Promise<T> {
-  let currentDelay = initialDelay;
-  let attempts = 0;
-
-  while (true) {
-    try {
-      attempts++;
-      return await operation();
-    } catch (error) {
-      if (attempts >= retries) {
-        throw error;
-      }
-
-      // For rate limit errors, use backoff; for other errors, maybe don't retry
-      if (error instanceof Error) {
-        // If it's not a rate limit error, we might want to throw immediately for some error types
-        if (error.message && !error.message.includes('rate') && !error.message.includes('limit') && 
-            error.message.includes('bad request') && !error.message.includes('ETIMEOUT') &&
-            !error.message.includes('ECONNRESET')) {
-          throw error;
-        }
-      }
-
-      // Add some jitter to prevent all retries hitting at the same time
-      const jitter = currentDelay * jitterFactor * (Math.random() * 2 - 1);
-      const delay = currentDelay + jitter;
-      
-      console.log(`Rate limit encountered. Retrying after ${Math.round(delay / 1000)}s (attempt ${attempts}/${retries})...`);
-      
-      // Wait before retrying
-      await sleep(delay);
-      
-      // Increase delay for next attempt
-      currentDelay *= factor;
-    }
-  }
-}
+import { v4 as uuidv4 } from 'uuid'; // Keep UUID for potential future use, though maybe not needed now
+import { setTimeout as sleep } from 'timers/promises'; // Keep sleep for potential future use
 
 class WhatsAppService {
   private sock: WASocket | null = null;
@@ -243,7 +185,7 @@ class WhatsAppService {
       
       console.log(`Found ${messages.length} messages in chat history for ${jid}`);
       
-      // Process and save all these messages to Supabase
+      // Process and save all these messages to Supabase -- NOTE: This processing will no longer save to Supabase
       let processedCount = 0;
       let failedCount = 0;
       
@@ -259,7 +201,7 @@ class WhatsAppService {
             // Skip messages from the user themselves
             if (msg.key.fromMe) return;
             
-            // Use the existing function to process each message
+            // Use the existing function to process each message (but it won't save anymore)
             await this.handleIncomingMessage(msg);
             processedCount++;
           } catch (error) {
@@ -347,7 +289,8 @@ class WhatsAppService {
         }
       }
 
-      let messageType: SnippetData['message_type'] = 'unknown';
+      // Determine message type and content (without media download/upload)
+      let messageType: string = 'unknown'; // Changed type from SnippetData['message_type'] to string
       let content: string = '';
       let caption: string | undefined = undefined;
 
@@ -360,45 +303,27 @@ class WhatsAppService {
         content = msg.message.extendedTextMessage.text;
       } else if (msg.message?.imageMessage) {
         messageType = 'image';
-        try {
-          content = await this.downloadAndUploadMedia(msg, 'image');
-          caption = msg.message.imageMessage.caption || undefined; // Extract image caption
-        } catch (error) {
-          console.error('Failed to download image, storing message without media:', error);
-          content = 'media_download_failed';
-        }
+        caption = msg.message.imageMessage.caption || undefined; // Extract image caption
+        content = '[Image Media - Not Downloaded]'; // Placeholder for content
       } else if (msg.message?.videoMessage) {
         messageType = 'video';
-        try {
-          content = await this.downloadAndUploadMedia(msg, 'video');
-          caption = msg.message.videoMessage.caption || undefined; // Extract video caption
-        } catch (error) {
-          console.error('Failed to download video, storing message without media:', error);
-          content = 'media_download_failed';
-        }
+        caption = msg.message.videoMessage.caption || undefined; // Extract video caption
+        content = '[Video Media - Not Downloaded]'; // Placeholder for content
       } else if (msg.message?.documentMessage) {
         messageType = 'document';
-        try {
-          content = await this.downloadAndUploadMedia(msg, 'document');
-          caption = msg.message.documentMessage.caption || undefined; // Extract document caption
-        } catch (error) {
-          console.error('Failed to download document, storing message without media:', error);
-          content = 'media_download_failed';
-        }
+        caption = msg.message.documentMessage.caption || undefined; // Extract document caption
+        content = '[Document Media - Not Downloaded]'; // Placeholder for content
       }
 
       if (messageType !== 'unknown' && content) {
-        const snippetData: SnippetData = {
-          sender_jid: senderJid,
-          timestamp: timestamp,
-          message_type: messageType,
-          content: content,
-          sender_name: senderName,
-          caption: caption,
-          group_name: groupName, // Add group name to snippet data
-          is_group: isGroup     // Add group flag to snippet data
-        };
-        await this.saveSnippetToSupabase(snippetData);
+        // Log the processed message details instead of saving to Supabase
+        console.log(`Processed message: 
+          Sender: ${senderJid} (${senderName || 'N/A'})
+          Timestamp: ${timestamp}
+          Type: ${messageType}
+          Content: ${content}
+          Caption: ${caption || 'N/A'}
+          Group: ${isGroup ? groupName || senderJid : 'N/A'}`);
       } else {
         console.log(`Skipping unsupported message type from ${senderJid}`);
       }
@@ -406,95 +331,6 @@ class WhatsAppService {
       console.error('Error handling incoming message:', error);
     }
   }
-
-  // >>> ADDED: Function to download media and upload to Supabase Storage <<<
-  private async downloadAndUploadMedia(msg: proto.IWebMessageInfo, type: 'image' | 'video' | 'document'): Promise<string> {
-    // Added null check for msg.message here as well
-    const messageContent = msg.message?.imageMessage || msg.message?.videoMessage || msg.message?.documentMessage;
-    if (!messageContent) {
-      throw new Error('No media content found in message');
-    }
-    
-    // Extract the correct media key based on the message type
-    const mediaKey = messageContent.mediaKey;
-    const mimetype = messageContent.mimetype;
-    const fileExtension = mimetype?.split('/')[1] || ''; // Basic extension extraction
-    const filename = `${uuidv4()}${fileExtension ? '.' + fileExtension : ''}`;
-
-    return await exponentialBackoff(async () => {
-      try {
-        // Download media with retry mechanism
-        const buffer = await downloadMediaMessage(
-            msg, 
-            'buffer', 
-            {}, 
-            { 
-              logger: this.logger, 
-              reuploadRequest: this.sock!.updateMediaMessage
-            }
-        );
-
-        if (!(buffer instanceof Buffer)) {
-          throw new Error('Failed to download media or buffer is not a Buffer');
-        }
-
-        // Added small delay to avoid overwhelming the Supabase Storage
-        await sleep(500);
-
-        // Upload to Supabase Storage
-        const { data, error } = await supabase.storage
-          .from('whatsapp-media') // Your bucket name
-          .upload(filename, buffer, {
-            contentType: mimetype || undefined,
-            upsert: false, // Don't overwrite existing files (optional)
-          });
-
-        if (error) {
-          throw new Error(`Supabase Storage upload error: ${error.message}`);
-        }
-
-        // Get public URL (adjust if using signed URLs)
-        const { data: urlData } = supabase.storage
-          .from('whatsapp-media')
-          .getPublicUrl(data.path);
-
-        if (!urlData || !urlData.publicUrl) {
-            throw new Error('Could not get public URL for uploaded media');
-        }
-        console.log(`Media uploaded: ${urlData.publicUrl}`);
-        return urlData.publicUrl;
-      } catch (error) {
-        console.error('Error downloading or uploading media:', error);
-        throw error; // Let the exponentialBackoff function handle retries
-      }
-    }, 5, 2000); // 5 retries starting with 2 second delay
-  }
-
-  // >>> ADDED: Function to save snippet data to Supabase DB <<<
-  private async saveSnippetToSupabase(data: SnippetData) {
-    try {
-      const { error } = await supabase
-        .from('whatsapp_snippets')
-        .insert([{
-          sender_jid: data.sender_jid,
-          timestamp: data.timestamp.toISOString(),
-          message_type: data.message_type,
-          content: data.content,
-          sender_name: data.sender_name,
-          caption: data.caption,
-          group_name: data.group_name, // Add group name to database insert
-          is_group: data.is_group      // Add group flag to database insert
-        }]);
-
-      if (error) {
-        throw new Error(`Supabase DB insert error: ${error.message}`);
-      }
-      console.log(`Snippet saved for ${data.sender_jid}`);
-    } catch (error) {
-      console.error('Error saving snippet to Supabase:', error);
-    }
-  }
-  // >>> END ADDED <<<
 }
 
 // Create singleton instance

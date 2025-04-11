@@ -110,82 +110,11 @@ GET /api/messages/chats
 ```
 Returns a list of all available chats (individual and group) that the WhatsApp client has in memory, including their JIDs and names.
 
-#### Extract Chat History
+#### Extract Chat History (From Memory)
 ```
 GET /api/messages/history/:jid?limit=50
 ```
-Extracts and saves message history from a specific chat to the connected Supabase database. Replace `:jid` with the WhatsApp ID of the chat (e.g., `1234567890@s.whatsapp.net` for individual chats or `123456789-987654321@g.us` for group chats).
-
-## Message History Extraction
-
-### Overview
-This API provides functionality to extract and store messages from your WhatsApp chats. The messages are saved to a Supabase database and any media is uploaded to Supabase Storage.
-
-### How to Use
-
-1. **List Available Chats**
-   ```
-   GET /api/messages/chats
-   ```
-   This will return a JSON array of all chats with their JIDs and names.
-   
-   Example response:
-   ```json
-   {
-     "status": "success",
-     "data": [
-       {
-         "jid": "1234567890@s.whatsapp.net",
-         "isGroup": false
-       },
-       {
-         "jid": "123456789-987654321@g.us",
-         "name": "My Group Chat",
-         "isGroup": true
-       }
-     ]
-   }
-   ```
-
-2. **Extract History from a Specific Chat**
-   ```
-   GET /api/messages/history/:jid?limit=50
-   ```
-   
-   - Replace `:jid` with the WhatsApp JID from the list of chats
-   - The `limit` parameter controls how many messages to extract (default: 50)
-   
-   Example:
-   ```
-   GET /api/messages/history/1234567890@s.whatsapp.net?limit=100
-   ```
-   
-   Response:
-   ```json
-   {
-     "status": "success",
-     "message": "75 messages processed and saved to Supabase",
-     "count": 75
-   }
-   ```
-
-### Limitations
-
-- Only messages received while your server is running will be available for extraction
-- Messages are stored in memory and may be lost on server restart (unless you've configured persistent storage)
-- Media files must be downloadable by the server to be processed and stored
-
-### Data Structure
-
-Messages are stored in Supabase with the following structure:
-- `sender_jid`: The WhatsApp ID of the sender
-- `timestamp`: When the message was sent
-- `message_type`: Type of message ('text', 'image', 'video', 'document')
-- `content`: Text content or Supabase Storage URL for media
-- `sender_name`: Name of the sender (if available)
-- `caption`: Caption for media messages (if provided)
-- `group_name`: Name of the group (for group messages)
-- `is_group`: Boolean flag indicating if the message is from a group
+Extracts recent message history from memory for a specific chat. Replace `:jid` with the WhatsApp ID of the chat (e.g., `1234567890@s.whatsapp.net` for individual chats or `123456789-987654321@g.us` for group chats). Note: This history is volatile and may be lost on server restart.
 
 ## Important Notes
 
