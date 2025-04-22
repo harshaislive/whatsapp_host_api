@@ -145,7 +145,6 @@ class WhatsAppService {
     this.sock.ev.on('messages.upsert', async (m) => {
       const msg = m.messages[0];
       if (!msg.message) return; // Ignore empty messages or status updates etc.
-      if (msg.key.fromMe) return; // Optional: Ignore messages sent by ourselves
 
       console.log('Received new message:', JSON.stringify(m, null, 2));
       await this.handleIncomingMessage(msg);
@@ -229,7 +228,112 @@ class WhatsAppService {
   }
   // >>> END ADDED <<<
 
-  // Method to fetch chat history from a specific JID
+  // New method to format and save conversations by date
+  private async formatAndSaveDailyConversation(messages: proto.IWebMessageInfo[], jid: string) {
+    try {
+      if (!this.sock) {
+        throw new Error('WhatsApp client not initialized');
+      }
+      
+      // Group messages by date
+      const messagesByDate = new Map<string, proto.IWebMessageInfo[]>();
+      
+      for (const msg of messages) {
+        if (!msg.message) continue;
+        
+        const timestamp = new Date((msg.messageTimestamp as number) * 1000);
+        const dateStr = timestamp.toISOString().split('T')[0]; // YYYY-MM-DD format
+        
+        if (!messagesByDate.has(dateStr)) {
+          messagesByDate.set(dateStr, []);
+        }
+        
+        messagesByDate.get(dateStr)!.push(msg);
+      }
+      
+      // Get chat name (contact or group)
+      let chatName = '';
+      if (jid.endsWith('@g.us') && this.sock) {
+        try {
+          const groupInfo = await this.sock.groupMetadata(jid);
+          chatName = groupInfo.subject;
+        } catch (error) {
+          console.error(`Error fetching group info for ${jid}:`, error);
+        }
+      } else {
+        // For individual chats, try to get contact name or use JID
+        chatName = jid.split('@')[0]; // Default to phone number part
+      }
+      
+      // Format and save each day's conversation
+      for (const [dateStr, dayMessages] of messagesByDate.entries()) {
+        // Sort messages by timestamp
+        dayMessages.sort((a, b) => 
+          ((a.messageTimestamp as number) || 0) - ((b.messageTimestamp as number) || 0)
+        );
+        
+        // Format conversation header
+        let formattedText = `WhatsApp Conversation for ${dateStr}\n\n`;
+        
+        // Format each message
+        for (const msg of dayMessages) {
+          const timestamp = new Date((msg.messageTimestamp as number) * 1000);
+          const timeStr = timestamp.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: true 
+          });
+          
+          // Determine sender name
+          let senderName = msg.key.fromMe ? "Me" : (msg.pushName || "Unknown");
+          
+          // Extract message content
+          let content = '';
+          if (msg.message?.conversation) {
+            content = msg.message.conversation;
+          } else if (msg.message?.extendedTextMessage?.text) {
+            content = msg.message.extendedTextMessage.text;
+          } else if (msg.message?.imageMessage) {
+            content = "[Image]" + (msg.message.imageMessage.caption ? `: ${msg.message.imageMessage.caption}` : '');
+          } else if (msg.message?.videoMessage) {
+            content = "[Video]" + (msg.message.videoMessage.caption ? `: ${msg.message.videoMessage.caption}` : '');
+          } else if (msg.message?.documentMessage) {
+            content = "[Document]" + (msg.message.documentMessage.fileName ? `: ${msg.message.documentMessage.fileName}` : '');
+          } else {
+            content = "[Unsupported message type]";
+          }
+          
+          // Add formatted message line
+          formattedText += `${timeStr} | ${senderName} | : ${content}\n`;
+        }
+        
+        // Save to Supabase
+        const { error } = await supabase
+          .from('whatsapp_daily_conversations')
+          .upsert([{
+            chat_date: dateStr,
+            chat_jid: jid,
+            chat_name: chatName,
+            formatted_text: formattedText
+          }], {
+            onConflict: 'chat_date,chat_jid' // Update if entry for this date and JID already exists
+          });
+          
+        if (error) {
+          console.error(`Error saving formatted conversation for ${dateStr}:`, error);
+        } else {
+          console.log(`Saved formatted conversation for ${dateStr}`);
+        }
+      }
+      
+      return messagesByDate.size; // Return number of days processed
+    } catch (error) {
+      console.error('Error formatting and saving daily conversations:', error);
+      throw error;
+    }
+  }
+
+  // Update the fetchChatHistory method to also save formatted conversations
   async fetchChatHistory(jid: string, limit = 50): Promise<proto.IWebMessageInfo[]> {
     try {
       if (!this.sock) {
@@ -256,9 +360,6 @@ class WhatsAppService {
         // Process each message in the batch
         const promises = batch.map(async (msg) => {
           try {
-            // Skip messages from the user themselves
-            if (msg.key.fromMe) return;
-            
             // Use the existing function to process each message
             await this.handleIncomingMessage(msg);
             processedCount++;
@@ -277,7 +378,12 @@ class WhatsAppService {
         }
       }
       
+      // Also format and save daily conversations
+      const daysProcessed = await this.formatAndSaveDailyConversation(messages, jid);
+      
       console.log(`Completed processing ${processedCount} messages. Failed: ${failedCount}.`);
+      console.log(`Formatted and saved conversations for ${daysProcessed} day(s).`);
+      
       return messages;
     } catch (error) {
       console.error('Error fetching chat history:', error);

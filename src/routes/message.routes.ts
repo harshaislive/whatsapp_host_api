@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import whatsappService from '../services/whatsapp.service';
+import supabase from '../services/supabase.service';
 
 const router = Router();
 
@@ -108,6 +109,59 @@ router.get('/history/:jid', async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: error instanceof Error ? error.message : 'Failed to fetch chat history'
+    });
+  }
+});
+
+// NEW ENDPOINT: Fetch formatted daily conversations for a specific JID
+router.get('/formatted-history/:jid', async (req, res) => {
+  try {
+    const { jid } = req.params;
+    const date = req.query.date as string; // Optional date filter (YYYY-MM-DD)
+    const limit = parseInt(req.query.limit as string) || 7; // Default to 7 days
+    
+    if (!jid) {
+      return res.status(400).json({ 
+        status: 'error',
+        message: 'JID is required'
+      });
+    }
+
+    // First, make sure we've fetched history
+    await whatsappService.fetchChatHistory(jid, 100); // Fetch 100 messages to ensure we have data
+    
+    // Query Supabase for the formatted conversations
+    const { data, error } = await supabase
+      .from('whatsapp_daily_conversations')
+      .select('*')
+      .eq('chat_jid', jid)
+      .order('chat_date', { ascending: false })
+      .limit(limit);
+    
+    if (error) {
+      return res.status(500).json({
+        status: 'error',
+        message: `Failed to retrieve formatted conversations: ${error.message}`
+      });
+    }
+    
+    // If specific date requested, filter results
+    if (date) {
+      const filteredData = data.filter((item: any) => item.chat_date === date);
+      return res.json({
+        status: 'success',
+        data: filteredData
+      });
+    }
+    
+    res.json({
+      status: 'success',
+      data: data
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to fetch formatted history'
     });
   }
 });
