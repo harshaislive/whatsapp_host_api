@@ -1,5 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import whatsappService from './services/whatsapp.service';
 import messageRoutes from './routes/message.routes';
@@ -12,6 +13,18 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// CORS middleware - configurable from environment
+const corsOrigins = process.env.CORS_ORIGINS 
+  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+  : true; // Allow all origins if not specified
+
+app.use(cors({
+  origin: corsOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Middleware
 app.use(express.json());
