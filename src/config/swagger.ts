@@ -1,3 +1,11 @@
+// Helper function to get server URL from environment
+const getServerUrl = () => {
+  const host = process.env.SWAGGER_HOST || 'localhost';
+  const port = process.env.PORT || '3000';
+  const protocol = process.env.SWAGGER_PROTOCOL || 'http';
+  return `${protocol}://${host}:${port}`;
+};
+
 export const swaggerDocument = {
   openapi: '3.0.0',
   info: {
@@ -10,8 +18,8 @@ export const swaggerDocument = {
   },
   servers: [
     {
-      url: 'http://localhost:3000',
-      description: 'Local development server'
+      url: getServerUrl(),
+      description: 'API Server'
     }
   ],
   tags: [
