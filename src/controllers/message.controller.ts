@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import whatsappService from '../services/whatsapp.service';
+import whatsappService from '../services/whatsapp-minimal.service';
 
 export const sendMessage = async (req: Request, res: Response) => {
   try {
@@ -40,17 +40,12 @@ export const sendMedia = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await whatsappService.sendMedia(to, {
-      url: mediaUrl,
-      type,
-      caption
+    // Media sending not implemented in minimal service
+    return res.status(501).json({
+      status: false,
+      message: 'Media sending not implemented in minimal service'
     });
 
-    return res.json({
-      status: true,
-      message: 'Media sent successfully',
-      data: result
-    });
   } catch (error) {
     console.error('Error sending media:', error);
     return res.status(500).json({

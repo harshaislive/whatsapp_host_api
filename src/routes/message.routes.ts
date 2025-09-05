@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import whatsappService from '../services/whatsapp.service';
+import whatsappService from '../services/whatsapp-minimal.service';
 
 const router = Router();
 
@@ -48,17 +48,12 @@ router.post('/send-media', async (req, res) => {
       });
     }
 
-    const response = await whatsappService.sendMedia(to, {
-      url: mediaUrl,
-      type,
-      caption
+    // Media sending not implemented in minimal service
+    return res.status(501).json({ 
+      status: 'error',
+      message: 'Media sending not implemented in minimal service'
     });
     
-    res.json({
-      status: 'success',
-      message: 'Media sent successfully',
-      data: response
-    });
   } catch (error) {
     res.status(500).json({
       status: 'error',
@@ -67,14 +62,12 @@ router.post('/send-media', async (req, res) => {
   }
 });
 
-// NEW ENDPOINT: List all available chats
+// NEW ENDPOINT: List all available chats (not implemented in minimal service)
 router.get('/chats', async (req, res) => {
   try {
-    const chats = await whatsappService.listAllChats();
-    
-    res.json({
-      status: 'success',
-      data: chats
+    res.status(501).json({
+      status: 'error',
+      message: 'Chat listing not implemented in minimal service'
     });
   } catch (error) {
     res.status(500).json({
@@ -84,25 +77,12 @@ router.get('/chats', async (req, res) => {
   }
 });
 
-// NEW ENDPOINT: Fetch chat history for a specific JID and save to Supabase
+// NEW ENDPOINT: Fetch chat history (not implemented in minimal service)
 router.get('/history/:jid', async (req, res) => {
   try {
-    const { jid } = req.params;
-    const limit = parseInt(req.query.limit as string) || 50;
-    
-    if (!jid) {
-      return res.status(400).json({ 
-        status: 'error',
-        message: 'JID is required'
-      });
-    }
-
-    const messages = await whatsappService.fetchChatHistory(jid, limit);
-    
-    res.json({
-      status: 'success',
-      message: `${messages.length} messages processed and saved to Supabase`,
-      count: messages.length
+    res.status(501).json({
+      status: 'error',
+      message: 'Chat history fetching not implemented in minimal service'
     });
   } catch (error) {
     res.status(500).json({
