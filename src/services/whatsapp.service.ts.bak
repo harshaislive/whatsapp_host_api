@@ -3,7 +3,6 @@ import makeWASocket, {
   DisconnectReason,
   WASocket,
   downloadContentFromMessage,
-  makeInMemoryStore,
   proto,
   useMultiFileAuthState,
   downloadMediaMessage
@@ -76,11 +75,11 @@ async function exponentialBackoff<T>(
 
 class WhatsAppService {
   private sock: WASocket | null = null;
-  private store: ReturnType<typeof makeInMemoryStore>;
   private logger: ReturnType<typeof pino>;
-  private storeFile: string;
-  private storeInterval: NodeJS.Timeout | null = null;
   private currentQR: string | null = null; // Variable to store the QR string
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 5;
+  private reconnectDelay: number = 5000; // Start with 5 seconds
 
   constructor() {
     // Configure logger
@@ -93,109 +92,114 @@ class WhatsAppService {
         }
       }
     });
-    
-    // Set store file path
-    this.storeFile = path.resolve('./storage/store.json');
-    
-    // Configure store
-    this.store = makeInMemoryStore({
-      logger: this.logger
-    });
-
-    // Read store file if it exists
-    if (fs.existsSync(this.storeFile)) {
-      this.store.readFromFile(this.storeFile);
-    }
   }
 
+  // Simplified store interval (disabled for now)
   private setupStoreInterval() {
-    // Clear existing interval if any
-    if (this.storeInterval) {
-      clearInterval(this.storeInterval);
-    }
-
-    // Save store every 60 seconds instead of 10
-    this.storeInterval = setInterval(() => {
-      // Only write if connected
-      if (this.isConnected()) {
-        this.store.writeToFile(this.storeFile);
-      }
-    }, 60_000); // Changed from 10 seconds to 60 seconds
+    // Store functionality disabled for now
   }
 
-  async connect() {
-    const { state, saveCreds } = await useMultiFileAuthState(
-      path.resolve(process.env.SESSION_DIR || './storage/sessions')
-    );
+  async connect(): Promise<WASocket> {
+    try {
+      const { state, saveCreds } = await useMultiFileAuthState(
+        path.resolve(process.env.SESSION_DIR || './storage/sessions')
+      );
 
-    // Create WhatsApp connection
-    this.sock = makeWASocket({
-      auth: state,
-      logger: this.logger,
-      printQRInTerminal: false // We'll handle QR code display ourselves
-    });
+      // Create WhatsApp connection with simple, working configuration
+      this.sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: 'info' }), // Keep some logging
+        browser: ['WhatsApp Host API', 'Chrome', '1.0.0'],
+        printQRInTerminal: false // We handle QR ourselves
+      });
 
-    // Bind events
-    this.store.bind(this.sock.ev);
+      // Setup store interval (disabled for now)
+      this.setupStoreInterval();
 
-    // Setup store interval
-    this.setupStoreInterval();
+      // >>> ADDED: Listen for incoming messages <<<
+      this.sock.ev.on('messages.upsert', async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message) return; // Ignore empty messages or status updates etc.
+        if (msg.key.fromMe) return; // Optional: Ignore messages sent by ourselves
 
-    // >>> ADDED: Listen for incoming messages <<<
-    this.sock.ev.on('messages.upsert', async (m) => {
-      const msg = m.messages[0];
-      if (!msg.message) return; // Ignore empty messages or status updates etc.
-      if (msg.key.fromMe) return; // Optional: Ignore messages sent by ourselves
+        console.log('Received new message:', JSON.stringify(m, null, 2));
+        await this.handleIncomingMessage(msg);
+      });
+      // >>> END ADDED <<<
 
-      console.log('Received new message:', JSON.stringify(m, null, 2));
-      await this.handleIncomingMessage(msg);
-    });
-    // >>> END ADDED <<<
-
-    // Handle connection events
-    this.sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        // Store the QR code string instead of printing
-        this.currentQR = qr;
-        console.log('QR code generated. Visit /api/qr-code endpoint to get the string for scanning.');
-      }
-
-      if (connection === 'close') {
-        // Clear QR code when connection closes (unless logged out)
-        const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-        if(this.currentQR) {
-            console.log('Connection closed, clearing QR code.');
-            this.currentQR = null;
-        }
+      // Handle connection events
+      this.sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
         
-        if (shouldReconnect) {
-          await this.connect();
-        } else {
-          console.log('WhatsApp connection closed');
-          // Clear store interval on disconnect
-          if (this.storeInterval) {
-            clearInterval(this.storeInterval);
-            this.storeInterval = null;
+        this.logger.info('Connection update:', { connection, qr: !!qr });
+
+        if (qr) {
+          // Store the QR code string and reset reconnect attempts on new QR
+          this.currentQR = qr;
+          this.reconnectAttempts = 0;
+          console.log('QR code generated. Visit /api/qr-code endpoint to get the image for scanning.');
+        }
+
+        if (connection === 'close') {
+          const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+          
+          this.logger.info('Connection closed:', { 
+            statusCode, 
+            error: lastDisconnect?.error?.message,
+            reconnectAttempts: this.reconnectAttempts 
+          });
+          
+          // Only clear QR code if it's a logout, not a connection failure
+          if (statusCode === DisconnectReason.loggedOut) {
+            console.log('Device logged out, clearing QR and resetting attempts');
+            this.currentQR = null;
+            this.reconnectAttempts = 0;
+            // Try to reconnect immediately for logout to get new QR
+            setTimeout(() => this.connect(), 1000);
+          } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            // For connection failures, retry without clearing QR
+            this.reconnectAttempts++;
+            const delay = 3000; // Fixed 3 second delay
+            
+            console.log(`Connection failed, retrying in ${delay/1000} seconds... (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            
+            setTimeout(async () => {
+              try {
+                await this.connect();
+              } catch (error) {
+                console.error('Reconnection failed:', error);
+              }
+            }, delay);
+          } else {
+            console.log('Max reconnection attempts reached. Use force-reconnect endpoint to retry.');
+            this.currentQR = null;
           }
         }
-      }
 
-      if (connection === 'open') {
-        console.log('WhatsApp connection established');
-        // Clear QR code once connected
-        if(this.currentQR) {
-            console.log('Connection open, clearing QR code.');
-            this.currentQR = null;
+        if (connection === 'open') {
+          console.log('WhatsApp connection established successfully');
+          // Reset reconnect attempts on successful connection
+          this.reconnectAttempts = 0;
+          // Clear QR code once connected
+          if(this.currentQR) {
+              console.log('Connection open, clearing QR code.');
+              this.currentQR = null;
+          }
         }
-      }
-    });
 
-    // Handle credentials update
-    this.sock.ev.on('creds.update', saveCreds);
+        if (connection === 'connecting') {
+          console.log('Connecting to WhatsApp...');
+        }
+      });
 
-    return this.sock;
+      // Handle credentials update
+      this.sock.ev.on('creds.update', saveCreds);
+
+      return this.sock;
+    } catch (error) {
+      this.logger.error('Error during WhatsApp connection:', error);
+      throw error;
+    }
   }
 
   async sendMessage(to: string, message: string) {
@@ -229,6 +233,55 @@ class WhatsAppService {
   }
   // >>> END ADDED <<<
 
+  // Method to reset connection state and force new QR generation
+  async resetConnection() {
+    console.log('Resetting WhatsApp connection...');
+    
+    // Clear current QR code
+    this.currentQR = null;
+    
+    // Reset reconnect attempts
+    this.reconnectAttempts = 0;
+    
+    // Close current connection if exists
+    if (this.sock) {
+      try {
+        this.sock.end(undefined);
+      } catch (error) {
+        console.error('Error ending current connection:', error);
+      }
+      this.sock = null;
+    }
+    
+    // Clear store interval
+    if (this.storeInterval) {
+      clearInterval(this.storeInterval);
+      this.storeInterval = null;
+    }
+    
+    // Wait a moment then reconnect
+    setTimeout(async () => {
+      try {
+        await this.connect();
+      } catch (error) {
+        console.error('Failed to reconnect after reset:', error);
+      }
+    }, 2000);
+  }
+
+  // Debug method to get connection status
+  getConnectionStatus() {
+    return {
+      isConnected: this.isConnected(),
+      hasSocket: !!this.sock,
+      hasQR: !!this.currentQR,
+      reconnectAttempts: this.reconnectAttempts,
+      maxReconnectAttempts: this.maxReconnectAttempts,
+      socketState: this.sock ? 'initialized' : 'null',
+      userInfo: this.sock?.user ? 'logged in' : 'not logged in'
+    };
+  }
+
   // Method to fetch chat history from a specific JID
   async fetchChatHistory(jid: string, limit = 50): Promise<proto.IWebMessageInfo[]> {
     try {
@@ -254,7 +307,7 @@ class WhatsAppService {
         console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(messages.length/batchSize)}`);
         
         // Process each message in the batch
-        const promises = batch.map(async (msg) => {
+        const promises = batch.map(async (msg: proto.IWebMessageInfo) => {
           try {
             // Skip messages from the user themselves
             if (msg.key.fromMe) return;
